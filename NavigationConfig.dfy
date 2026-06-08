@@ -1,3 +1,14 @@
+// Verified from: seav2/config/twist_mux.yaml
+// Real priorities:
+// joystick = 100
+// tracker = 20
+// direction = 15
+// navigation = 10
+// nav2 = 5
+// Property verified:
+// Manual joystick control has the highest priority.
+// Nav2 autonomous control has the lowest priority.
+
 datatype Topic =
   CmdVelNav |
   CmdVelSafe |

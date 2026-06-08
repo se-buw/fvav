@@ -1,3 +1,13 @@
+
+// Verified from: seav2/config/my_controllers.yaml
+// Real controller:
+// acker_cont: ackermann_steering_controller/AckermannSteeringController
+// Real command topic:
+// cmd_vel_topic: /cmd_vel_safe
+// Property verified:
+// Ackermann controller receives only safety-filtered velocity commands.
+
+
 datatype Topic =
   CmdVelSafe |
   CmdVelNav |
