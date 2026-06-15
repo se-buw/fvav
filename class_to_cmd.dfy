@@ -1,41 +1,60 @@
-datatype Option<T> = None | Some(value: T)
+// class_to_cmd.dfy
+// Formal verification of YoloSignNode.class_to_cmd(classname).
+// Python source: yolo_node.py lines 180-195.
+//
+// Assumption: input c is already strip().lower() normalised.
+// "" represents Python's None (unmapped class).
 
-predicate HasSubstring(s: string, sub: string)
+include "common.dfy"
+
+function ClassToCmd(c: string): string
+  ensures ClassToCmd(c) in {"LEFT", "RIGHT", "STOP", "STRAIGHT", "U_TURN", ""}
 {
-  exists i {:trigger s[i .. i + |sub|]} :: 0 <= i <= |s| - |sub| &&
-               s[i .. i + |sub|] == sub
+  if Contains(c, "left")                       then "LEFT"
+  else if Contains(c, "right")                 then "RIGHT"
+  else if Contains(c, "stop")                  then "STOP"
+  else if Contains(c, "straight")              then "STRAIGHT"
+  else if Contains(c, "u") && Contains(c, "turn") then "U_TURN"
+  else ""
 }
 
+// --- postcondition lemmas ---
 
-method ClassToCmd(classname: string) returns (result: Option<string>)
-  ensures result == None ==>
-    !HasSubstring(classname, "left")     &&
-    !HasSubstring(classname, "right")    &&
-    !HasSubstring(classname, "stop")     &&
-    !HasSubstring(classname, "straight") &&
-    !(HasSubstring(classname, "u") && HasSubstring(classname, "turn"))
+// Left takes priority over all others when present.
+lemma LeftPriority(c: string)
+  requires Contains(c, "left")
+  ensures ClassToCmd(c) == "LEFT"
+{}
 
-  ensures result != None ==>
-    result == Some("LEFT")     ||
-    result == Some("RIGHT")    ||
-    result == Some("STOP")     ||
-    result == Some("STRAIGHT") ||
-    result == Some("U_TURN")
+// Right is matched only when left is absent.
+lemma RightPriority(c: string)
+  requires !Contains(c, "left")
+  requires Contains(c, "right")
+  ensures ClassToCmd(c) == "RIGHT"
+{}
 
-  ensures result == Some("LEFT")     ==> HasSubstring(classname, "left")
-  ensures result == Some("RIGHT")    ==> HasSubstring(classname, "right")
-  ensures result == Some("STOP")     ==> HasSubstring(classname, "stop")
-  ensures result == Some("STRAIGHT") ==> HasSubstring(classname, "straight")
-  ensures result == Some("U_TURN")   ==>
-    HasSubstring(classname, "u") && HasSubstring(classname, "turn")
-{
-  var c := classname;
+// U_TURN requires both substrings; either alone is insufficient.
+lemma UTurnRequiresBoth(c: string)
+  ensures ClassToCmd(c) == "U_TURN" ==>
+          Contains(c, "u") && Contains(c, "turn")
+{}
 
-  if HasSubstring(c, "left")     { return Some("LEFT"); }
-  if HasSubstring(c, "right")    { return Some("RIGHT"); }
-  if HasSubstring(c, "stop")     { return Some("STOP"); }
-  if HasSubstring(c, "straight") { return Some("STRAIGHT"); }
-  if HasSubstring(c, "u") && HasSubstring(c, "turn") { return Some("U_TURN"); }
+lemma UTurnMissingU(c: string)
+  requires !Contains(c, "u")
+  ensures ClassToCmd(c) != "U_TURN"
+{}
 
-  return None;
-}
+lemma UTurnMissingTurn(c: string)
+  requires !Contains(c, "turn")
+  ensures ClassToCmd(c) != "U_TURN"
+{}
+
+// An unmapped class produces "" (Python None).
+lemma UnmappedIsEmpty(c: string)
+  requires !Contains(c, "left")
+  requires !Contains(c, "right")
+  requires !Contains(c, "stop")
+  requires !Contains(c, "straight")
+  requires !(Contains(c, "u") && Contains(c, "turn"))
+  ensures ClassToCmd(c) == ""
+{}
