@@ -1,0 +1,33 @@
+dafny --version 
+
+dafny verify yolo_sign_node_verification.dfy     # proof check
+dafny build yolo_sign_node_verification.dfy -t py -o yolo_sign_node_dafny 
+
+
+
+
+
+# build yolo package
+cd seav-3    
+source /opt/ros/humble/setup.bash
+colcon build --packages-select yolo_sign_node
+source install/setup.bash
+
+# run yolo node
+ros2 run yolo_sign_node yolo_node --ros-args \
+  -p model_path:=/full/path/to/my_model.pt \
+  -p image_topic:=/image_raw/compressed \
+  -p conf_thres:=0.1 -p imgsz:=160
+
+
+
+
+
+# dontnet dafny installation
+dotnet --list-sdks       # lists installed SDKs (empty = runtime only, no SDK)
+which dotnet             # shows where it's installed, if anywhere
+
+sudo apt install -y dotnet-sdk-8.0
+dotnet tool install --global Dafny
+echo 'export PATH="$HOME/.dotnet/tools:$PATH"' >> ~/.bashrc
+source ~/.bashrc
