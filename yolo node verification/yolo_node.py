@@ -1,47 +1,12 @@
 #!/usr/bin/env python3
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parent / "yolo_sign_node_dafny-py"))
+import module_ as module_
+
 import os
 import time
 import threading
-import sys
-from pathlib import Path
-
-
-sys.path.append(str(Path(__file__).resolve().parent / "yolo_sign_node_dafny-py"))
-
-try:
-    import module_
-    import _dafny
-    _DAFNY_OK = True
-except ImportError:
-    module_ = None
-    _dafny = None
-    _DAFNY_OK = False
-
-
-def dafny_class_to_cmd(c: str) -> str:
-    """Call the formally-verified Dafny ClassToCmd across the language boundary.
-    Returns a native Python str command, or "" for an unmapped class.
-    """
-    arg = _dafny.Seq(map(_dafny.CodePoint, c))
-    result = module_.default__.ClassToCmd(arg)
-    # Collapse the returned Seq of CodePoints back into a native Python str.
-    return result.VerbatimString(False)
-
-
-def dafny_best_detection(detections, conf_thres):
-    """Run the formally-verified argmax (Dafny BestDetection) over detections.
-    Returns (best_conf: float, best_name: str | None)
-    """
-    box_seq = [
-        module_.Box_Box(_dafny.BigRational(conf),
-                        _dafny.Seq(map(_dafny.CodePoint, name)))
-        for conf, name in detections
-    ]
-    best_conf, best_name = module_.default__.BestDetection(
-        box_seq, _dafny.BigRational(conf_thres))
-    name = best_name.VerbatimString(False)
-    return float(best_conf), (name if name else None)
-
 
 import rclpy
 from rclpy.node import Node
@@ -116,15 +81,14 @@ class YoloSignNode(Node):
         # Health check timer
         self.create_timer(2.0, self.health_check)
 
+        # instantiate dafny verifier
+        self.verifier = module_.YoloNode()
+
         self.get_logger().info(f"✓ Subscribed to: {self.image_topic}")
         self.get_logger().info(f"✓ Publishing to: {self.publish_topic}")
         self.get_logger().info(f"✓ Confidence threshold: {self.conf_thres}")
         self.get_logger().info(f"✓ Image size: {self.imgsz}")
         self.get_logger().info(f"✓ Frame skip: {self.skip_frames}")
-        if _DAFNY_OK:
-            self.get_logger().info("✓ class_to_cmd: using formally-verified Dafny module")
-        else:
-            self.get_logger().warn("Dafny module not found; using local Python class_to_cmd fallback")
         self.get_logger().info("YOLO Sign Node is ready!")
 
     def destroy_node(self):
@@ -182,40 +146,67 @@ class YoloSignNode(Node):
                 time.sleep(0.05)
                 continue
 
-            # Extract (conf, name) for each YOLO box.
+            # Find best detection above threshold
+            best_conf = 0.0
+            best_name = None
+
             detections = []
+            dafny_boxes = []
             for b in boxes:
                 conf = float(b.conf.item())
+                if conf < self.conf_thres:
+                    continue
                 cls_idx = int(b.cls.item())
-                name = self.model.names.get(cls_idx, str(cls_idx)) or str(cls_idx)
+                name = self.model.names.get(cls_idx, str(cls_idx))
                 detections.append((conf, name))
+                dafny_boxes.append(module_.Box(float(b.conf.item()), name))
 
-            # Priotizes dafny verified best detection, 
-            # falls back if dafny compile error
-            if _DAFNY_OK:
-                best_conf, best_name = dafny_best_detection(detections, self.conf_thres)
-            else:
-                best_conf, best_name = self.best_detection(detections, self.conf_thres)
+            best_conf = 0.0
+            best_name = None
+            cmd = None
 
-            if best_name is None:
-                time.sleep(0.05)
-                continue
+            try:
+                # Attempts verification via Dafny
+                found, best_conf, best_name = self.verifier.GetBestDetection(
+                    dafny_boxes, self.conf_thres
+                )
+                if not found:
+                    time.sleep(0.05)
+                    continue
 
-            # Priotizes dafny verified class_to_cmd, 
-            # falls back if dafny compile error
-            c = str(best_name).strip().lower()
-            if _DAFNY_OK:
-                cmd = dafny_class_to_cmd(c)
-            else:
-                cmd = self.class_to_cmd(c) or ""
+                c = str(best_name).strip().lower()
+                dafny_option = self.verifier.ClassToCmd(c)
 
-            if not cmd:
-                self.get_logger().warn(f"Unmapped class: '{best_name}' (conf {best_conf:.2f})")
+                # Unpack Dafny Option datatype
+                if hasattr(dafny_option, "is_Some") and dafny_option.is_Some:
+                    cmd = str(dafny_option.value)
+                else:
+                    cmd = None
+
+            except Exception as e:
+                # Fallback to Python logic on Dafny error
+                self.get_logger().warn(
+                    f"Dafny verifier exception ({e}); falling back to Python implementations."
+                )
+                best_conf, best_name = self.best_detection(
+                    detections, self.conf_thres
+                )
+                if best_name is None:
+                    time.sleep(0.05)
+                    continue
+                cmd = self.class_to_cmd(best_name.lower())
+
+            if cmd is None:
+                self.get_logger().warn(
+                    f"Unmapped class: '{best_name}' (conf {best_conf:.2f})"
+                )
                 time.sleep(0.05)
                 continue
 
             # Publish command if changed
             now = time.time()
+            # camera now detects the same sign until 4 seconds of the maneuere if more or less
+            # time is required change 4.0 here
             if cmd != self._last_cmd or (now - self._last_cmd_time) > 4.0:
                 out = String()
                 out.data = cmd
@@ -226,8 +217,9 @@ class YoloSignNode(Node):
 
             time.sleep(0.05)
 
+
     def best_detection(self, detections, conf_thres):
-        """Python fallback mirroring Dafny BestDetection: argmax conf >= thres.
+        """Python fallback for best detection function
 
         Returns (best_conf: float, best_name: str | None).
         """
@@ -239,10 +231,9 @@ class YoloSignNode(Node):
                 best_name = name
         return best_conf, best_name
 
-    def class_to_cmd(self, classname: str):
+    def class_to_cmd(self, c: str):
         """Map YOLO class name to direction command"""
-        c = str(classname).strip().lower()
-
+        
         if "left" in c:
             return "LEFT"
         if "right" in c:
@@ -255,7 +246,6 @@ class YoloSignNode(Node):
             return "U_TURN"
 
         return None
-        
 
 
 def main():
