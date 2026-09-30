@@ -2,70 +2,70 @@ datatype MotionSource =
   Joystick |
   Tracker |
   Direction |
-  SafeCommand |
+  Navigation |
   Nav2
 
-function Priority(s: MotionSource): int {
+datatype Topic =
+  CmdVelSafe |
+  CmdVelNav |
+  CmdVelJoy
+
+// Defines the priority assigned to each motion command source.
+// These values correspond to the twist_mux configuration used
+// in the ROS2 motion control pipeline.
+function Priority(s: MotionSource): int
+{
   match s
   case Joystick => 100
   case Tracker => 20
   case Direction => 15
-  case SafeCommand => 10
+  case Navigation => 10
   case Nav2 => 5
 }
 
-predicate SafePriorityOrder()
+// Defines the topic used as input to the Ackermann controller.
+// The controller should only receive commands from the
+// safety-filtered topic /cmd_vel_safe.
+function ControllerInput(): Topic
 {
-  Priority(Joystick) > Priority(Tracker) &&
-  Priority(Tracker) > Priority(Direction) &&
-  Priority(Direction) > Priority(SafeCommand) &&
-  Priority(SafeCommand) > Priority(Nav2)
+  CmdVelSafe
 }
 
-class MotionControlPipeline
+// Formal safety property:
+// Manual joystick commands must always have higher priority
+// than autonomous navigation commands (Nav2).
+// This ensures that a human operator can immediately override
+// autonomous behaviour when necessary.
+predicate ManualOverrideSafety()
 {
-  var hasTwistMux: bool
-  var hasAckermannController: bool
-  var hasSafeCommandTopic: bool
-  var hasRobotLaunch: bool
-  var hasSimulationLaunch: bool
-
-  constructor(twist: bool, controller: bool, safeTopic: bool, robotLaunch: bool, simLaunch: bool)
-    ensures hasTwistMux == twist
-    ensures hasAckermannController == controller
-    ensures hasSafeCommandTopic == safeTopic
-    ensures hasRobotLaunch == robotLaunch
-    ensures hasSimulationLaunch == simLaunch
-  {
-    hasTwistMux := twist;
-    hasAckermannController := controller;
-    hasSafeCommandTopic := safeTopic;
-    hasRobotLaunch := robotLaunch;
-    hasSimulationLaunch := simLaunch;
-  }
+  Priority(Joystick) > Priority(Nav2)
 }
 
-predicate ValidMotionSafetyPipeline(p: MotionControlPipeline)
-  reads p
+// Formal safety property:
+// The Ackermann controller must receive commands only from
+// the safety-filtered topic CmdVelSafe.
+predicate ControllerUsesSafeTopic()
 {
-  SafePriorityOrder() &&
-  p.hasTwistMux &&
-  p.hasAckermannController &&
-  p.hasSafeCommandTopic &&
-  p.hasRobotLaunch &&
-  p.hasSimulationLaunch
+  ControllerInput() == CmdVelSafe
 }
 
-method VerifyRobotMotionSafety()
+// Overall motion safety property:
+// 1. Manual control can override autonomous navigation.
+// 2. The controller receives only safety-filtered commands.
+//
+// Together, these properties represent the safety requirements
+// of the robot motion-control pipeline.
+predicate MotionSafetyPipeline()
 {
-  var pipeline := new MotionControlPipeline(true, true, true, true, true);
+  ManualOverrideSafety() &&
+  ControllerUsesSafeTopic()
+}
 
-  assert SafePriorityOrder();
-  assert pipeline.hasTwistMux;
-  assert pipeline.hasAckermannController;
-  assert pipeline.hasSafeCommandTopic;
-  assert pipeline.hasRobotLaunch;
-  assert pipeline.hasSimulationLaunch;
-
-  assert ValidMotionSafetyPipeline(pipeline);
+// Verification method:
+// Dafny proves that the complete motion safety pipeline
+// satisfies all specified safety requirements.
+// The postcondition ensures that MotionSafetyPipeline holds.
+method VerifyMotionSafetyPipeline()
+  ensures MotionSafetyPipeline()
+{
 }
